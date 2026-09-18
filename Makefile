@@ -1,13 +1,15 @@
 APP = ScrollToggle
-SRC = main.m DeviceProfile.m DeviceStore.m DeviceSelection.m MouseDeviceMonitor.m
-HEADERS = DeviceProfile.h DeviceStore.h DeviceSelection.h MouseDeviceMonitor.h
+SRC = src/main.m src/DeviceProfile.m src/DeviceStore.m src/DeviceSelection.m src/MouseDeviceMonitor.m
+HEADERS = src/DeviceProfile.h src/DeviceStore.h src/DeviceSelection.h src/MouseDeviceMonitor.h
+PLIST = resources/Info.plist
 
-APP_BUNDLE = $(APP).app
+BUILD_DIR = build
+APP_BUNDLE = $(BUILD_DIR)/$(APP).app
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS = $(CONTENTS)/MacOS
 BINARY = $(MACOS)/$(APP)
 
-INSTALL_APP = /Applications/$(APP_BUNDLE)
+INSTALL_APP = /Applications/$(APP).app
 
 CC = clang
 CFLAGS = -fobjc-arc -mmacosx-version-min=13.0
@@ -15,13 +17,13 @@ FRAMEWORKS = -framework Cocoa -framework ServiceManagement -framework IOKit
 
 all: $(APP_BUNDLE)
 
-$(APP_BUNDLE): $(SRC) $(HEADERS) Info.plist
+$(APP_BUNDLE): $(SRC) $(HEADERS) $(PLIST)
 	rm -rf $(APP_BUNDLE)
 	mkdir -p $(MACOS)
 
 	$(CC) $(CFLAGS) $(FRAMEWORKS) $(SRC) -o $(BINARY)
 
-	cp Info.plist $(CONTENTS)/Info.plist
+	cp $(PLIST) $(CONTENTS)/Info.plist
 
 install: $(APP_BUNDLE)
 	rm -rf $(INSTALL_APP)

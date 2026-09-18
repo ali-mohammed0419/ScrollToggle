@@ -6,10 +6,12 @@ Left-click the menu-bar icon to toggle and save the scrolling mode for the activ
 
 ## Build instructions
 
-- `make` builds `ScrollToggle.app`
+- `make` builds `build/ScrollToggle.app`
 - `make install` builds the app and copies it to `/Applications`
 - `make clean` removes the generated app bundle
 - `make reinstall` rebuilds the app, stops any running copy, installs it to `/Applications`, and opens it
+
+Source files live in `src/`, bundle metadata lives in `resources/`, and generated build output is placed in `build/`.
 
 ## Disclaimer
 
