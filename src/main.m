@@ -188,7 +188,7 @@
         [self.deviceStore profileForIdentifier:self.activeProfileIdentifier];
     if (!profile) {
         profile = [self.deviceStore
-            ensureTrackpadProfileWithNaturalScrolling:[self isNaturalScrolling]];
+            ensureTrackpadProfileWithNaturalScrolling:YES];
         self.activeProfileIdentifier = profile.identifier;
     }
     return profile;
@@ -503,6 +503,21 @@
     [self rebuildStatusMenu];
 }
 
+- (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
+        didRejectCompositeDeviceWithIdentifier:(NSString *)identifier {
+    if (![self.deviceStore removeProfileForIdentifier:identifier]) {
+        return;
+    }
+
+    [self.connectedDevices removeObjectForKey:identifier];
+    [self.connectedAt removeObjectForKey:identifier];
+    if ([self.activeProfileIdentifier isEqualToString:identifier]) {
+        [self selectActiveProfile];
+        [self applyActiveProfile];
+    }
+    [self rebuildStatusMenu];
+}
+
 
 #pragma mark - Quit
 
@@ -519,7 +534,7 @@
     self.deviceStore = [[DeviceStore alloc]
         initWithUserDefaults:[NSUserDefaults standardUserDefaults]];
     [self.deviceStore
-        ensureTrackpadProfileWithNaturalScrolling:[self isNaturalScrolling]];
+        ensureTrackpadProfileWithNaturalScrolling:YES];
     self.connectedDevices = [NSMutableDictionary dictionary];
     self.connectedAt = [NSMutableDictionary dictionary];
     self.activeProfileIdentifier = STTrackpadProfileIdentifier;

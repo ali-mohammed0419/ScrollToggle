@@ -2,7 +2,7 @@
 
 static NSString * const STProfilesDefaultsKey = @"DeviceProfiles";
 static NSString * const STProfilesSchemaVersionKey = @"DeviceProfilesSchemaVersion";
-static NSInteger const STProfilesSchemaVersion = 1;
+static NSInteger const STProfilesSchemaVersion = 2;
 
 @interface DeviceStore ()
 @property (strong) NSUserDefaults *userDefaults;
@@ -22,6 +22,8 @@ static NSInteger const STProfilesSchemaVersion = 1;
 }
 
 - (void)loadProfiles {
+    NSInteger storedSchemaVersion =
+        [self.userDefaults integerForKey:STProfilesSchemaVersionKey];
     id storedProfiles = [self.userDefaults objectForKey:STProfilesDefaultsKey];
     if (![storedProfiles isKindOfClass:[NSArray class]]) {
         return;
@@ -35,6 +37,14 @@ static NSInteger const STProfilesSchemaVersion = 1;
         if (profile) {
             self.profiles[profile.identifier] = profile;
         }
+    }
+
+    if (storedSchemaVersion < 2) {
+        DeviceProfile *trackpad = self.profiles[STTrackpadProfileIdentifier];
+        if (trackpad) {
+            trackpad.naturalScrolling = YES;
+        }
+        [self saveProfiles];
     }
 }
 
@@ -122,6 +132,17 @@ static NSInteger const STProfilesSchemaVersion = 1;
     }
     profile.naturalScrolling = naturalScrolling;
     [self saveProfiles];
+}
+
+- (BOOL)removeProfileForIdentifier:(NSString *)identifier {
+    if ([identifier isEqualToString:STTrackpadProfileIdentifier] ||
+        !self.profiles[identifier]) {
+        return NO;
+    }
+
+    [self.profiles removeObjectForKey:identifier];
+    [self saveProfiles];
+    return YES;
 }
 
 @end

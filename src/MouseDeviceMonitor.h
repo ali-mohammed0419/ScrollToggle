@@ -27,6 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
         didConnectDevice:(MouseDeviceDescriptor *)device;
 - (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
       didDisconnectDeviceWithIdentifier:(NSString *)identifier;
+- (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
+      didRejectCompositeDeviceWithIdentifier:(NSString *)identifier;
 @end
 
 @interface MouseDeviceMonitor : NSObject {

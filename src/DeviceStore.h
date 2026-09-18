@@ -20,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
                                          seen:(NSDate *)seen;
 - (void)setNaturalScrolling:(BOOL)naturalScrolling
               forIdentifier:(NSString *)identifier;
+- (BOOL)removeProfileForIdentifier:(NSString *)identifier;
 
 @end
 

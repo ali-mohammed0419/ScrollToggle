@@ -29,6 +29,7 @@ static NSString * const STMouseMonitorErrorDomain = @"com.ali.scrolltoggle.Mouse
 @end
 
 @interface MouseDeviceMonitor ()
+@property (strong) NSMutableSet<NSValue *> *observedDeviceKeys;
 @property (strong) NSMutableDictionary<NSValue *, NSString *> *deviceIdentifiers;
 @property (strong) NSMutableDictionary<NSString *, NSNumber *> *identifierCounts;
 @property (strong) NSMutableDictionary<NSString *, MouseDeviceDescriptor *> *descriptors;
@@ -60,6 +61,7 @@ static void STDeviceRemoved(void *context,
 - (instancetype)init {
     self = [super init];
     if (self) {
+        _observedDeviceKeys = [NSMutableSet set];
         _deviceIdentifiers = [NSMutableDictionary dictionary];
         _identifierCounts = [NSMutableDictionary dictionary];
         _descriptors = [NSMutableDictionary dictionary];
@@ -88,8 +90,8 @@ static void STDeviceRemoved(void *context,
     _manager = manager;
 
     NSDictionary *matching = @{
-        @kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop),
-        @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Mouse)
+        @kIOHIDPrimaryUsagePageKey: @(kHIDPage_GenericDesktop),
+        @kIOHIDPrimaryUsageKey: @(kHIDUsage_GD_Mouse)
     };
     IOHIDManagerSetDeviceMatching(_manager, (__bridge CFDictionaryRef)matching);
     IOHIDManagerRegisterDeviceMatchingCallback(_manager, STDeviceMatched,
@@ -98,19 +100,6 @@ static void STDeviceRemoved(void *context,
                                                (__bridge void *)self);
     IOHIDManagerScheduleWithRunLoop(_manager, CFRunLoopGetMain(),
                                     kCFRunLoopCommonModes);
-
-    IOReturn result = IOHIDManagerOpen(_manager, kIOHIDOptionsTypeNone);
-    if (result != kIOReturnSuccess) {
-        [self stopMonitoring];
-        self.starting = NO;
-        if (error) {
-            *error = [NSError errorWithDomain:STMouseMonitorErrorDomain
-                                         code:result
-                                     userInfo:@{NSLocalizedDescriptionKey:
-                                                    @"Unable to open the HID device manager."}];
-        }
-        return nil;
-    }
 
     CFSetRef deviceSet = IOHIDManagerCopyDevices(_manager);
     if (deviceSet) {
@@ -134,9 +123,9 @@ static void STDeviceRemoved(void *context,
     }
     IOHIDManagerUnscheduleFromRunLoop(_manager, CFRunLoopGetMain(),
                                       kCFRunLoopCommonModes);
-    IOHIDManagerClose(_manager, kIOHIDOptionsTypeNone);
     CFRelease(_manager);
     _manager = NULL;
+    [self.observedDeviceKeys removeAllObjects];
     [self.deviceIdentifiers removeAllObjects];
     [self.identifierCounts removeAllObjects];
     [self.descriptors removeAllObjects];
@@ -148,12 +137,19 @@ static void STDeviceRemoved(void *context,
 
 - (void)registerDevice:(IOHIDDeviceRef)device notifyDelegate:(BOOL)notify {
     NSValue *deviceKey = [NSValue valueWithPointer:device];
-    if (self.deviceIdentifiers[deviceKey]) {
+    if ([self.observedDeviceKeys containsObject:deviceKey]) {
         return;
     }
+    [self.observedDeviceKeys addObject:deviceKey];
 
     MouseDeviceDescriptor *descriptor = [self descriptorForDevice:device];
     if (!descriptor) {
+        return;
+    }
+
+    if (![self hasStrictMouseUsagePairs:device]) {
+        [self.delegate mouseDeviceMonitor:self
+            didRejectCompositeDeviceWithIdentifier:descriptor.identifier];
         return;
     }
 
@@ -170,6 +166,7 @@ static void STDeviceRemoved(void *context,
 
 - (void)unregisterDevice:(IOHIDDeviceRef)device notifyDelegate:(BOOL)notify {
     NSValue *deviceKey = [NSValue valueWithPointer:device];
+    [self.observedDeviceKeys removeObject:deviceKey];
     NSString *identifier = self.deviceIdentifiers[deviceKey];
     if (!identifier) {
         return;
@@ -190,9 +187,49 @@ static void STDeviceRemoved(void *context,
     }
 }
 
+- (BOOL)hasStrictMouseUsagePairs:(IOHIDDeviceRef)device {
+    id value = [self objectProperty:kIOHIDDeviceUsagePairsKey device:device];
+    if (![value isKindOfClass:[NSArray class]]) {
+        return NO;
+    }
+
+    BOOL hasMouse = NO;
+    BOOL hasPointer = NO;
+    for (id object in (NSArray *)value) {
+        if (![object isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+
+        NSDictionary *pair = object;
+        NSNumber *usagePage = pair[@kIOHIDDeviceUsagePageKey];
+        NSNumber *usage = pair[@kIOHIDDeviceUsageKey];
+        if (![usagePage isKindOfClass:[NSNumber class]] ||
+            ![usage isKindOfClass:[NSNumber class]] ||
+            usagePage.integerValue != kHIDPage_GenericDesktop) {
+            continue;
+        }
+
+        if (usage.integerValue == kHIDUsage_GD_Keyboard ||
+            usage.integerValue == kHIDUsage_GD_Keypad) {
+            return NO;
+        }
+        if (usage.integerValue == kHIDUsage_GD_Mouse) {
+            hasMouse = YES;
+        } else if (usage.integerValue == kHIDUsage_GD_Pointer) {
+            hasPointer = YES;
+        }
+    }
+
+    return hasMouse && hasPointer;
+}
+
 - (MouseDeviceDescriptor *)descriptorForDevice:(IOHIDDeviceRef)device {
-    if (!IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop,
-                                kHIDUsage_GD_Mouse)) {
+    NSNumber *usagePage =
+        [self numberProperty:kIOHIDPrimaryUsagePageKey device:device];
+    NSNumber *usage =
+        [self numberProperty:kIOHIDPrimaryUsageKey device:device];
+    if (usagePage.integerValue != kHIDPage_GenericDesktop ||
+        usage.integerValue != kHIDUsage_GD_Mouse) {
         return nil;
     }
 
@@ -269,8 +306,9 @@ static void STDeviceRemoved(void *context,
 }
 
 - (NSString *)displayTransportForRawTransport:(NSString *)rawTransport {
-    if ([rawTransport isEqualToString:@kIOHIDTransportBluetoothValue] ||
-        [rawTransport isEqualToString:@kIOHIDTransportBluetoothLowEnergyValue] ||
+    if ((rawTransport &&
+         [rawTransport rangeOfString:@"Bluetooth"
+                             options:NSCaseInsensitiveSearch].location != NSNotFound) ||
         [rawTransport isEqualToString:@kIOHIDTransportBTAACPValue]) {
         return @"Bluetooth";
     }
