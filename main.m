@@ -1,7 +1,11 @@
 #import <Cocoa/Cocoa.h>
 #import <ServiceManagement/ServiceManagement.h>
 
-@interface AppDelegate : NSObject <NSApplicationDelegate>
+#import "DeviceStore.h"
+#import "DeviceSelection.h"
+#import "MouseDeviceMonitor.h"
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, MouseDeviceMonitorDelegate>
 
 @property (strong) NSStatusItem *statusItem;
 @property (strong) NSMenu *statusMenu;
@@ -9,9 +13,13 @@
 @property (strong) NSImage *naturalStatusImage;
 @property (strong) NSImage *traditionalStatusImage;
 
-@property (strong) NSMenuItem *naturalMenuItem;
-@property (strong) NSMenuItem *traditionalMenuItem;
 @property (strong) NSMenuItem *launchAtLoginMenuItem;
+
+@property (strong) DeviceStore *deviceStore;
+@property (strong) MouseDeviceMonitor *mouseMonitor;
+@property (strong) NSMutableDictionary<NSString *, MouseDeviceDescriptor *> *connectedDevices;
+@property (strong) NSMutableDictionary<NSString *, NSDate *> *connectedAt;
+@property (copy) NSString *activeProfileIdentifier;
 
 @end
 
@@ -169,37 +177,56 @@
             ? @"Natural Scrolling"
             : @"Traditional Scrolling";
 
-    self.naturalMenuItem.state =
-        natural ? NSControlStateValueOn
-                : NSControlStateValueOff;
-
-    self.traditionalMenuItem.state =
-        natural ? NSControlStateValueOff
-                : NSControlStateValueOn;
-
     [self updateLoginItemStatus];
 }
 
 
 #pragma mark - Scroll actions
 
-- (void)toggleScrolling:(id)sender {
-    BOOL current = [self isNaturalScrolling];
+- (DeviceProfile *)activeProfile {
+    DeviceProfile *profile =
+        [self.deviceStore profileForIdentifier:self.activeProfileIdentifier];
+    if (!profile) {
+        profile = [self.deviceStore
+            ensureTrackpadProfileWithNaturalScrolling:[self isNaturalScrolling]];
+        self.activeProfileIdentifier = profile.identifier;
+    }
+    return profile;
+}
 
-    [self applyScrollSetting:!current];
+- (void)applyActiveProfile {
+    DeviceProfile *profile = [self activeProfile];
+    [self applyScrollSetting:profile.naturalScrolling];
     [self updateStatus];
 }
 
-
-- (void)setNaturalScrolling:(id)sender {
-    [self applyScrollSetting:YES];
-    [self updateStatus];
+- (void)selectActiveProfile {
+    self.activeProfileIdentifier =
+        STSelectActiveProfileIdentifier(self.connectedAt);
 }
 
-
-- (void)setTraditionalScrolling:(id)sender {
-    [self applyScrollSetting:NO];
+- (void)toggleActiveProfilePreference:(id)sender {
+    BOOL natural = ![self isNaturalScrolling];
+    [self.deviceStore setNaturalScrolling:natural
+                            forIdentifier:self.activeProfileIdentifier];
+    [self applyScrollSetting:natural];
     [self updateStatus];
+    [self rebuildStatusMenu];
+}
+
+- (void)toggleDeviceProfilePreference:(NSMenuItem *)sender {
+    NSString *identifier = sender.representedObject;
+    DeviceProfile *profile = [self.deviceStore profileForIdentifier:identifier];
+    if (!profile) {
+        return;
+    }
+
+    [self.deviceStore setNaturalScrolling:!profile.naturalScrolling
+                            forIdentifier:identifier];
+    if ([identifier isEqualToString:self.activeProfileIdentifier]) {
+        [self applyActiveProfile];
+    }
+    [self rebuildStatusMenu];
 }
 
 
@@ -284,34 +311,123 @@
 
 - (void)buildMenu {
     self.statusMenu = [[NSMenu alloc] init];
+    [self rebuildStatusMenu];
+}
 
+- (BOOL)isProfileConnected:(DeviceProfile *)profile {
+    if ([profile.identifier isEqualToString:STTrackpadProfileIdentifier]) {
+        return YES;
+    }
+    return self.connectedDevices[profile.identifier] != nil;
+}
 
-    self.naturalMenuItem =
+- (NSMenuItem *)sectionHeaderWithTitle:(NSString *)title {
+    NSMenuItem *item =
+        [[NSMenuItem alloc]
+            initWithTitle:title
+                   action:nil
+            keyEquivalent:@""];
+    item.enabled = NO;
+    return item;
+}
+
+- (NSMenuItem *)menuItemForDeviceProfile:(DeviceProfile *)profile {
+    BOOL fallback =
+        [profile.identifier isEqualToString:STTrackpadProfileIdentifier];
+    BOOL active =
+        [profile.identifier isEqualToString:self.activeProfileIdentifier];
+
+    NSString *title = profile.displayName;
+    if (!fallback) {
+        title = [title stringByAppendingFormat:@" — %@", profile.transport];
+    }
+    if (active) {
+        title = [title stringByAppendingString:@" • Active"];
+    }
+
+    NSMenuItem *deviceItem =
+        [[NSMenuItem alloc]
+            initWithTitle:title
+                   action:nil
+            keyEquivalent:@""];
+    NSMenu *settingsMenu = [[NSMenu alloc] initWithTitle:profile.displayName];
+    NSMenuItem *naturalItem =
         [[NSMenuItem alloc]
             initWithTitle:@"Natural Scrolling"
-                   action:@selector(setNaturalScrolling:)
+                   action:@selector(toggleDeviceProfilePreference:)
             keyEquivalent:@""];
+    naturalItem.target = self;
+    naturalItem.representedObject = profile.identifier;
+    naturalItem.state = profile.naturalScrolling ? NSControlStateValueOn
+                                                  : NSControlStateValueOff;
+    [settingsMenu addItem:naturalItem];
+    deviceItem.submenu = settingsMenu;
+    return deviceItem;
+}
 
-    self.naturalMenuItem.target = self;
+- (void)rebuildStatusMenu {
+    [self.statusMenu removeAllItems];
 
-    [self.statusMenu addItem:self.naturalMenuItem];
+    NSMutableArray<DeviceProfile *> *connectedProfiles = [NSMutableArray array];
+    NSMutableArray<DeviceProfile *> *disconnectedProfiles = [NSMutableArray array];
+    for (DeviceProfile *profile in [self.deviceStore allProfiles]) {
+        if ([self isProfileConnected:profile]) {
+            [connectedProfiles addObject:profile];
+        } else {
+            [disconnectedProfiles addObject:profile];
+        }
+    }
 
+    [connectedProfiles sortUsingComparator:
+        ^NSComparisonResult(DeviceProfile *left, DeviceProfile *right) {
+            BOOL leftActive =
+                [left.identifier isEqualToString:self.activeProfileIdentifier];
+            BOOL rightActive =
+                [right.identifier isEqualToString:self.activeProfileIdentifier];
+            if (leftActive != rightActive) {
+                return leftActive ? NSOrderedAscending : NSOrderedDescending;
+            }
 
-    self.traditionalMenuItem =
-        [[NSMenuItem alloc]
-            initWithTitle:@"Traditional Scrolling"
-                   action:@selector(setTraditionalScrolling:)
-            keyEquivalent:@""];
+            BOOL leftTrackpad =
+                [left.identifier isEqualToString:STTrackpadProfileIdentifier];
+            BOOL rightTrackpad =
+                [right.identifier isEqualToString:STTrackpadProfileIdentifier];
+            if (leftTrackpad != rightTrackpad) {
+                return leftTrackpad ? NSOrderedAscending : NSOrderedDescending;
+            }
 
-    self.traditionalMenuItem.target = self;
+            NSDate *leftDate = self.connectedAt[left.identifier] ?: left.lastSeenAt;
+            NSDate *rightDate = self.connectedAt[right.identifier] ?: right.lastSeenAt;
+            NSComparisonResult dateResult = [rightDate compare:leftDate];
+            if (dateResult != NSOrderedSame) {
+                return dateResult;
+            }
+            return [left.displayName localizedCaseInsensitiveCompare:right.displayName];
+        }];
 
-    [self.statusMenu addItem:self.traditionalMenuItem];
+    [disconnectedProfiles sortUsingComparator:
+        ^NSComparisonResult(DeviceProfile *left, DeviceProfile *right) {
+            NSComparisonResult dateResult = [right.lastSeenAt compare:left.lastSeenAt];
+            if (dateResult != NSOrderedSame) {
+                return dateResult;
+            }
+            return [left.displayName localizedCaseInsensitiveCompare:right.displayName];
+        }];
 
+    [self.statusMenu addItem:[self sectionHeaderWithTitle:@"Connected"]];
+    for (DeviceProfile *profile in connectedProfiles) {
+        [self.statusMenu addItem:[self menuItemForDeviceProfile:profile]];
+    }
+
+    if (disconnectedProfiles.count > 0) {
+        [self.statusMenu addItem:[NSMenuItem separatorItem]];
+        [self.statusMenu addItem:[self sectionHeaderWithTitle:@"Not Connected"]];
+        for (DeviceProfile *profile in disconnectedProfiles) {
+            [self.statusMenu addItem:[self menuItemForDeviceProfile:profile]];
+        }
+    }
 
     [self.statusMenu addItem:[NSMenuItem separatorItem]];
-
-
-
     self.launchAtLoginMenuItem =
         [[NSMenuItem alloc]
             initWithTitle:@"Launch at Login"
@@ -336,6 +452,7 @@
     quitItem.target = self;
 
     [self.statusMenu addItem:quitItem];
+    [self updateLoginItemStatus];
 }
 
 
@@ -346,6 +463,7 @@
 
     if (event.type == NSEventTypeRightMouseUp) {
         [self updateStatus];
+        [self rebuildStatusMenu];
 
         self.statusItem.menu = self.statusMenu;
 
@@ -353,8 +471,36 @@
 
         self.statusItem.menu = nil;
     } else {
-        [self toggleScrolling:sender];
+        [self toggleActiveProfilePreference:sender];
     }
+}
+
+
+#pragma mark - Mouse devices
+
+- (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
+          didConnectDevice:(MouseDeviceDescriptor *)device {
+    NSDate *now = [NSDate date];
+    [self.deviceStore upsertMouseWithIdentifier:device.identifier
+                                    displayName:device.displayName
+                                      transport:device.transport
+                                       vendorID:device.vendorID
+                                      productID:device.productID
+                                           seen:now];
+    self.connectedDevices[device.identifier] = device;
+    self.connectedAt[device.identifier] = now;
+    [self selectActiveProfile];
+    [self applyActiveProfile];
+    [self rebuildStatusMenu];
+}
+
+- (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
+        didDisconnectDeviceWithIdentifier:(NSString *)identifier {
+    [self.connectedDevices removeObjectForKey:identifier];
+    [self.connectedAt removeObjectForKey:identifier];
+    [self selectActiveProfile];
+    [self applyActiveProfile];
+    [self rebuildStatusMenu];
 }
 
 
@@ -369,6 +515,14 @@
 
 - (void)applicationDidFinishLaunching:
     (NSNotification *)notification {
+
+    self.deviceStore = [[DeviceStore alloc]
+        initWithUserDefaults:[NSUserDefaults standardUserDefaults]];
+    [self.deviceStore
+        ensureTrackpadProfileWithNaturalScrolling:[self isNaturalScrolling]];
+    self.connectedDevices = [NSMutableDictionary dictionary];
+    self.connectedAt = [NSMutableDictionary dictionary];
+    self.activeProfileIdentifier = STTrackpadProfileIdentifier;
 
     self.statusItem =
         [[NSStatusBar systemStatusBar]
@@ -390,13 +544,48 @@
 
     [self buildMenu];
 
-    [self updateStatus];
+    self.mouseMonitor = [[MouseDeviceMonitor alloc] init];
+    self.mouseMonitor.delegate = self;
+    NSError *monitorError = nil;
+    NSArray<MouseDeviceDescriptor *> *initialDevices =
+        [self.mouseMonitor startMonitoringWithError:&monitorError];
+    if (!initialDevices) {
+        NSLog(@"Unable to monitor mouse devices: %@", monitorError);
+    }
+
+    NSDate *now = [NSDate date];
+    for (MouseDeviceDescriptor *device in initialDevices) {
+        DeviceProfile *existing =
+            [self.deviceStore profileForIdentifier:device.identifier];
+        self.connectedDevices[device.identifier] = device;
+        self.connectedAt[device.identifier] =
+            existing.lastSeenAt ?: [NSDate distantPast];
+    }
+    [self selectActiveProfile];
+
+    for (MouseDeviceDescriptor *device in initialDevices) {
+        [self.deviceStore upsertMouseWithIdentifier:device.identifier
+                                        displayName:device.displayName
+                                          transport:device.transport
+                                           vendorID:device.vendorID
+                                          productID:device.productID
+                                               seen:now];
+    }
+
+    [self applyActiveProfile];
+    [self rebuildStatusMenu];
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    [self.mouseMonitor stopMonitoring];
 }
 
 @end
 
 
 int main(int argc, const char *argv[]) {
+    (void)argc;
+    (void)argv;
     @autoreleasepool {
 
         NSApplication *app =
