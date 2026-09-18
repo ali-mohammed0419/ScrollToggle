@@ -19,6 +19,8 @@
 @property (strong) MouseDeviceMonitor *mouseMonitor;
 @property (strong) NSMutableDictionary<NSString *, MouseDeviceDescriptor *> *connectedDevices;
 @property (strong) NSMutableDictionary<NSString *, NSDate *> *connectedAt;
+@property (strong) NSMutableDictionary<NSString *, NSNumber *> *lastUsedOrder;
+@property uint64_t usageSequence;
 @property (copy) NSString *activeProfileIdentifier;
 
 @end
@@ -29,35 +31,30 @@
 #pragma mark - Scroll setting
 
 - (BOOL)isNaturalScrolling {
-    NSString *value =
-        [[NSUserDefaults standardUserDefaults]
-            persistentDomainForName:NSGlobalDomain]
-            [@"com.apple.swipescrolldirection"];
-
+    CFPropertyListRef value = CFPreferencesCopyValue(
+        CFSTR("com.apple.swipescrolldirection"),
+        kCFPreferencesAnyApplication,
+        kCFPreferencesCurrentUser,
+        kCFPreferencesAnyHost);
     if (!value) {
         return YES;
     }
-
-    return [value boolValue];
+    BOOL natural = [(__bridge id)value boolValue];
+    CFRelease(value);
+    return natural;
 }
 
 
 - (void)applyScrollSetting:(BOOL)natural {
-    NSTask *defaultsTask = [[NSTask alloc] init];
-
-    defaultsTask.launchPath = @"/usr/bin/defaults";
-    defaultsTask.arguments = @[
-        @"write",
-        @"-g",
-        @"com.apple.swipescrolldirection",
-        @"-bool",
-        natural ? @"true" : @"false"
-    ];
-
-    [defaultsTask launch];
-    [defaultsTask waitUntilExit];
-
-    if (defaultsTask.terminationStatus != 0) {
+    CFPreferencesSetValue(
+        CFSTR("com.apple.swipescrolldirection"),
+        natural ? kCFBooleanTrue : kCFBooleanFalse,
+        kCFPreferencesAnyApplication,
+        kCFPreferencesCurrentUser,
+        kCFPreferencesAnyHost);
+    if (!CFPreferencesSynchronize(kCFPreferencesAnyApplication,
+                                  kCFPreferencesCurrentUser,
+                                  kCFPreferencesAnyHost)) {
         NSLog(@"Failed to write scrolling preference");
         return;
     }
@@ -173,9 +170,9 @@
     self.statusItem.button.title = @"";
 
     self.statusItem.button.toolTip =
-        natural
-            ? @"Natural Scrolling"
-            : @"Traditional Scrolling";
+        self.mouseMonitor && !self.mouseMonitor.inputMonitoringAvailable
+            ? @"Input Monitoring Required"
+            : (natural ? @"Natural Scrolling" : @"Traditional Scrolling");
 
     [self updateLoginItemStatus];
 }
@@ -196,13 +193,22 @@
 
 - (void)applyActiveProfile {
     DeviceProfile *profile = [self activeProfile];
-    [self applyScrollSetting:profile.naturalScrolling];
+    if ([self isNaturalScrolling] != profile.naturalScrolling) {
+        [self applyScrollSetting:profile.naturalScrolling];
+    }
     [self updateStatus];
 }
 
 - (void)selectActiveProfile {
     self.activeProfileIdentifier =
         STSelectActiveProfileIdentifier(self.connectedAt);
+}
+
+- (void)selectMostRecentlyUsedConnectedProfile {
+    self.activeProfileIdentifier =
+        STSelectMostRecentlyUsedProfileIdentifier(
+            [NSSet setWithArray:self.connectedDevices.allKeys],
+            self.lastUsedOrder);
 }
 
 - (void)toggleActiveProfilePreference:(id)sender {
@@ -427,6 +433,18 @@
         }
     }
 
+    if (self.mouseMonitor &&
+        !self.mouseMonitor.inputMonitoringAvailable) {
+        [self.statusMenu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *permissionItem =
+            [[NSMenuItem alloc]
+                initWithTitle:@"Input Monitoring Required…"
+                       action:@selector(openInputMonitoringSettings:)
+                keyEquivalent:@""];
+        permissionItem.target = self;
+        [self.statusMenu addItem:permissionItem];
+    }
+
     [self.statusMenu addItem:[NSMenuItem separatorItem]];
     self.launchAtLoginMenuItem =
         [[NSMenuItem alloc]
@@ -453,6 +471,23 @@
 
     [self.statusMenu addItem:quitItem];
     [self updateLoginItemStatus];
+}
+
+- (void)openInputMonitoringSettings:(id)sender {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Input Monitoring Required";
+    alert.informativeText =
+        @"Enable ScrollToggle in Privacy & Security → Input Monitoring, "
+         "then quit and reopen ScrollToggle.";
+    [alert addButtonWithTitle:@"Open Settings"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+        return;
+    }
+
+    NSURL *url = [NSURL URLWithString:
+        @"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"];
+    [[NSWorkspace sharedWorkspace] openURL:url];
 }
 
 
@@ -489,16 +524,37 @@
                                            seen:now];
     self.connectedDevices[device.identifier] = device;
     self.connectedAt[device.identifier] = now;
-    [self selectActiveProfile];
-    [self applyActiveProfile];
     [self rebuildStatusMenu];
 }
 
 - (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
         didDisconnectDeviceWithIdentifier:(NSString *)identifier {
+    BOOL wasActive =
+        [self.activeProfileIdentifier isEqualToString:identifier];
     [self.connectedDevices removeObjectForKey:identifier];
     [self.connectedAt removeObjectForKey:identifier];
-    [self selectActiveProfile];
+    [self.lastUsedOrder removeObjectForKey:identifier];
+    if (wasActive) {
+        [self selectMostRecentlyUsedConnectedProfile];
+        [self applyActiveProfile];
+    }
+    [self rebuildStatusMenu];
+}
+
+- (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
+        didReceiveActivityForProfileIdentifier:(NSString *)identifier {
+    if (![identifier isEqualToString:STTrackpadProfileIdentifier] &&
+        !self.connectedDevices[identifier]) {
+        return;
+    }
+
+    self.usageSequence++;
+    self.lastUsedOrder[identifier] = @(self.usageSequence);
+    if ([self.activeProfileIdentifier isEqualToString:identifier]) {
+        return;
+    }
+
+    self.activeProfileIdentifier = identifier;
     [self applyActiveProfile];
     [self rebuildStatusMenu];
 }
@@ -511,8 +567,9 @@
 
     [self.connectedDevices removeObjectForKey:identifier];
     [self.connectedAt removeObjectForKey:identifier];
+    [self.lastUsedOrder removeObjectForKey:identifier];
     if ([self.activeProfileIdentifier isEqualToString:identifier]) {
-        [self selectActiveProfile];
+        [self selectMostRecentlyUsedConnectedProfile];
         [self applyActiveProfile];
     }
     [self rebuildStatusMenu];
@@ -537,6 +594,7 @@
         ensureTrackpadProfileWithNaturalScrolling:YES];
     self.connectedDevices = [NSMutableDictionary dictionary];
     self.connectedAt = [NSMutableDictionary dictionary];
+    self.lastUsedOrder = [NSMutableDictionary dictionary];
     self.activeProfileIdentifier = STTrackpadProfileIdentifier;
 
     self.statusItem =

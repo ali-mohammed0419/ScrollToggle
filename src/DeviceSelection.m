@@ -19,3 +19,22 @@ NSString *STSelectActiveProfileIdentifier(
             }];
     return identifiers.firstObject;
 }
+
+NSString *STSelectMostRecentlyUsedProfileIdentifier(
+    NSSet<NSString *> *connectedMouseIdentifiers,
+    NSDictionary<NSString *, NSNumber *> *usageOrder) {
+    NSString *selected = STTrackpadProfileIdentifier;
+    unsigned long long selectedOrder =
+        usageOrder[STTrackpadProfileIdentifier].unsignedLongLongValue;
+
+    for (NSString *identifier in connectedMouseIdentifiers) {
+        unsigned long long order = usageOrder[identifier].unsignedLongLongValue;
+        if (order > selectedOrder ||
+            (order == selectedOrder && order > 0 &&
+             [identifier compare:selected] == NSOrderedAscending)) {
+            selected = identifier;
+            selectedOrder = order;
+        }
+    }
+    return selected;
+}

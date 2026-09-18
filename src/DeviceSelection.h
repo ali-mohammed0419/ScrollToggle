@@ -8,4 +8,10 @@ NS_ASSUME_NONNULL_BEGIN
 NSString *STSelectActiveProfileIdentifier(
     NSDictionary<NSString *, NSDate *> *connectedAt);
 
+// Selects the most recently used connected profile. The built-in trackpad is
+// always eligible and is the fallback when no connected device has been used.
+NSString *STSelectMostRecentlyUsedProfileIdentifier(
+    NSSet<NSString *> *connectedMouseIdentifiers,
+    NSDictionary<NSString *, NSNumber *> *usageOrder);
+
 NS_ASSUME_NONNULL_END

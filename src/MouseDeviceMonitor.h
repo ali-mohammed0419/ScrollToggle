@@ -29,6 +29,8 @@ NS_ASSUME_NONNULL_BEGIN
       didDisconnectDeviceWithIdentifier:(NSString *)identifier;
 - (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
       didRejectCompositeDeviceWithIdentifier:(NSString *)identifier;
+- (void)mouseDeviceMonitor:(MouseDeviceMonitor *)monitor
+      didReceiveActivityForProfileIdentifier:(NSString *)identifier;
 @end
 
 @interface MouseDeviceMonitor : NSObject {
@@ -37,6 +39,7 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 @property (weak, nullable) id<MouseDeviceMonitorDelegate> delegate;
+@property (readonly) BOOL inputMonitoringAvailable;
 
 // Returns the external mice already connected when monitoring starts.
 - (nullable NSArray<MouseDeviceDescriptor *> *)startMonitoringWithError:(NSError **)error;
